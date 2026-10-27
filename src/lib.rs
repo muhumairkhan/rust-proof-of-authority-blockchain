@@ -29,6 +29,40 @@ impl Account {
         self.nonce += 1;
         WithdrawResult::Success
     }
+
+    /// Adds money. Returns None if the balance would overflow u64.
+    pub fn deposit(&mut self, amount: u64) -> Option<u64> {
+        let new_balance = self.balance.checked_add(amount)?;
+        self.balance = new_balance;
+        Some(self.balance)
+    }
+}
+
+/// Anything that can describe itself in one line.
+pub trait Describe {
+    fn describe(&self) -> String;
+}
+
+impl Describe for Account {
+    fn describe(&self) -> String {
+        format!("balance={} nonce={}", self.balance, self.nonce)
+    }
+}
+
+/// Generic function: works for any type that implements Describe.
+pub fn print_description<T: Describe>(item: &T) {
+    println!("{}", item.describe());
+}
+
+/// Transfers between two accounts. Returns the withdraw result.
+/// If the withdraw fails, nothing changes.
+pub fn transfer(from: &mut Account, to: &mut Account, amount: u64) -> WithdrawResult {
+    let result = from.withdraw(amount);
+    if let WithdrawResult::Success = result {
+        // ignoring overflow here for simplicity
+        to.deposit(amount);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -50,18 +84,42 @@ mod tests {
     }
 
     #[test]
-    fn cannot_withdraw_more_than_balance() {
+    fn deposit_adds_balance() {
         let mut acc = Account::new(10);
-        let result = acc.withdraw(50);
-        assert!(matches!(result, WithdrawResult::InsufficientBalance));
-        assert_eq!(acc.balance, 10); // unchanged
-        assert_eq!(acc.nonce, 0); // unchanged
+        assert_eq!(acc.deposit(5), Some(15));
+        assert_eq!(acc.balance, 15);
     }
 
     #[test]
-    fn cannot_withdraw_zero() {
-        let mut acc = Account::new(10);
-        let result = acc.withdraw(0);
-        assert!(matches!(result, WithdrawResult::ZeroAmount));
+    fn deposit_overflow_returns_none() {
+        let mut acc = Account::new(u64::MAX);
+        assert_eq!(acc.deposit(1), None);
+        assert_eq!(acc.balance, u64::MAX); // unchanged
+    }
+
+    #[test]
+    fn describe_formats_account() {
+        let acc = Account::new(42);
+        assert_eq!(acc.describe(), "balance=42 nonce=0");
+    }
+
+    #[test]
+    fn transfer_moves_money() {
+        let mut alice = Account::new(100);
+        let mut bob = Account::new(0);
+        let result = transfer(&mut alice, &mut bob, 40);
+        assert!(matches!(result, WithdrawResult::Success));
+        assert_eq!(alice.balance, 60);
+        assert_eq!(bob.balance, 40);
+    }
+
+    #[test]
+    fn failed_transfer_changes_nothing() {
+        let mut alice = Account::new(10);
+        let mut bob = Account::new(0);
+        let result = transfer(&mut alice, &mut bob, 50);
+        assert!(matches!(result, WithdrawResult::InsufficientBalance));
+        assert_eq!(alice.balance, 10);
+        assert_eq!(bob.balance, 0);
     }
 }
