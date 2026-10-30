@@ -1,4 +1,4 @@
-use rust_poa_chain::{print_description, transfer, Account, WithdrawResult};
+use rust_poa_chain::{Account, print_description, transfer};
 
 fn main() {
     println!("{} node starting...", rust_poa_chain::name());
@@ -10,17 +10,15 @@ fn main() {
     print_description(&bob);
 
     match transfer(&mut alice, &mut bob, 30) {
-        WithdrawResult::Success => println!("Transferred 30"),
-        WithdrawResult::ZeroAmount => println!("Amount must be more than zero"),
-        WithdrawResult::InsufficientBalance => println!("Not enough balance"),
+        Ok(()) => println!("Transferred 30"),
+        Err(e) => println!("Transfer failed: {:?}", e),
     }
 
     print_description(&alice);
     print_description(&bob);
 
-    // Option in action
-    match bob.deposit(u64::MAX) {
-        Some(new_balance) => println!("Deposited, balance is {}", new_balance),
-        None => println!("Deposit would overflow"),
+    match transfer(&mut alice, &mut bob, 500) {
+        Ok(()) => println!("Transferred 500"),
+        Err(e) => println!("Transfer failed: {:?}", e),
     }
 }
