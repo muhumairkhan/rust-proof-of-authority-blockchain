@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 pub fn name() -> &'static str {
@@ -160,6 +161,128 @@ impl Default for WorldState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub index: u64,
+    pub timestamp: u64,
+    pub transactions: Vec<Transaction>,
+    pub previous_hash: String,
+    pub hash: String,
+}
+
+impl Block {
+    pub fn new(
+        index: u64,
+        timestamp: u64,
+        transactions: Vec<Transaction>,
+        previous_hash: String,
+    ) -> Block {
+        // borrow first to compute the hash, then move the values into the struct
+        let hash = Block::compute_hash(index, timestamp, &transactions, &previous_hash);
+        Block {
+            index,
+            timestamp,
+            transactions,
+            previous_hash,
+            hash,
+        }
+    }
+
+    /// Turns the block's contents into text, then hashes the text with SHA-256.
+    pub fn compute_hash(
+        index: u64,
+        timestamp: u64,
+        transactions: &[Transaction],
+        previous_hash: &str,
+    ) -> String {
+        let mut text = format!("{}|{}|{}", index, timestamp, previous_hash);
+        for tx in transactions {
+            text.push_str(&format!(
+                "|{}>{}:{}:{}",
+                tx.from, tx.to, tx.amount, tx.nonce
+            ));
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Does the stored hash still match the block's contents?
+    pub fn is_hash_valid(&self) -> bool {
+        self.hash
+            == Block::compute_hash(
+                self.index,
+                self.timestamp,
+                &self.transactions,
+                &self.previous_hash,
+            )
+    }
+}
+
+pub struct Blockchain {
+    chain: Vec<Block>,
+    state: WorldState,
+}
+
+impl Blockchain {
+    /// Starts a chain containing only the genesis block.
+    pub fn new(state: WorldState) -> Blockchain {
+        let genesis = Block::new(0, 0, Vec::new(), "0".repeat(64));
+        Blockchain {
+            chain: vec![genesis],
+            state,
+        }
+    }
+
+    pub fn latest_block(&self) -> &Block {
+        // the chain always has at least the genesis block, so this cannot fail
+        self.chain.last().expect("chain always has a genesis block")
+    }
+
+    pub fn len(&self) -> usize {
+        self.chain.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.chain.is_empty()
+    }
+
+    pub fn blocks(&self) -> &[Block] {
+        &self.chain
+    }
+
+    pub fn balance(&self, address: &str) -> u64 {
+        self.state.balance(address)
+    }
+
+    /// Applies the transactions, and only if ALL are valid, appends a new block.
+    pub fn add_block(&mut self, timestamp: u64, txs: Vec<Transaction>) -> Result<(), TxError> {
+        self.state.apply_all(&txs)?;
+
+        let latest = self.latest_block();
+        let block = Block::new(latest.index + 1, timestamp, txs, latest.hash.clone());
+        self.chain.push(block);
+        Ok(())
+    }
+
+    /// Checks every block's hash and every link to the block before it.
+    pub fn is_valid(&self) -> bool {
+        for i in 0..self.chain.len() {
+            let block = &self.chain[i];
+            if !block.is_hash_valid() {
+                return false;
+            }
+            if i > 0 {
+                let previous = &self.chain[i - 1];
+                if block.previous_hash != previous.hash || block.index != previous.index + 1 {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +386,74 @@ mod tests {
         assert_eq!(state.balance("alice"), 100);
         assert_eq!(state.balance("bob"), 0);
         assert_eq!(state.nonce("alice"), 0);
+    }
+
+    #[test]
+    fn block_hash_is_deterministic() {
+        let a = Block::new(1, 100, vec![tx("alice", "bob", 5, 0)], "abc".to_string());
+        let b = Block::new(1, 100, vec![tx("alice", "bob", 5, 0)], "abc".to_string());
+        assert_eq!(a.hash, b.hash);
+        assert_eq!(a.hash.len(), 64);
+    }
+
+    #[test]
+    fn block_hash_changes_with_contents() {
+        let a = Block::new(1, 100, vec![tx("alice", "bob", 5, 0)], "abc".to_string());
+        let b = Block::new(1, 100, vec![tx("alice", "bob", 6, 0)], "abc".to_string());
+        assert_ne!(a.hash, b.hash);
+    }
+
+    #[test]
+    fn new_chain_has_only_genesis() {
+        let chain = Blockchain::new(WorldState::new());
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain.latest_block().index, 0);
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn add_block_links_and_updates_state() {
+        let mut state = WorldState::new();
+        state.set_balance("alice", 100);
+        let mut chain = Blockchain::new(state);
+
+        assert_eq!(
+            chain.add_block(1000, vec![tx("alice", "bob", 40, 0)]),
+            Ok(())
+        );
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain.balance("bob"), 40);
+        assert_eq!(chain.blocks()[1].previous_hash, chain.blocks()[0].hash);
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn failed_block_is_not_added() {
+        let mut state = WorldState::new();
+        state.set_balance("alice", 10);
+        let mut chain = Blockchain::new(state);
+
+        let result = chain.add_block(1000, vec![tx("alice", "bob", 50, 0)]);
+        assert_eq!(result, Err(TxError::InsufficientBalance));
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain.balance("alice"), 10);
+    }
+
+    #[test]
+    fn tampering_is_detected() {
+        let mut state = WorldState::new();
+        state.set_balance("alice", 100);
+        let mut chain = Blockchain::new(state);
+        chain
+            .add_block(1000, vec![tx("alice", "bob", 10, 0)])
+            .unwrap();
+        chain
+            .add_block(2000, vec![tx("alice", "bob", 10, 1)])
+            .unwrap();
+        assert!(chain.is_valid());
+
+        // sneakily change an old transaction
+        chain.chain[1].transactions[0].amount = 999;
+        assert!(!chain.is_valid());
     }
 }
