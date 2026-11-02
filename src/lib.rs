@@ -20,6 +20,17 @@ pub enum TxError {
     BadNonce { expected: u64, got: u64 },
 }
 
+/// Everything that can go wrong when adding a block.
+#[derive(Debug, PartialEq)]
+pub enum BlockError {
+    /// The block's slot is not later than the previous block's slot.
+    SlotAlreadyUsed { slot: u64 },
+    /// Someone signed a slot that belongs to another validator.
+    WrongValidator { expected: String, got: String },
+    /// One of the transactions inside was invalid.
+    Tx(TxError),
+}
+
 impl Account {
     pub fn new(balance: u64) -> Account {
         Account { balance, nonce: 0 }
@@ -161,10 +172,37 @@ impl Default for WorldState {
     }
 }
 
+/// The ordered list of validators. Order matters: it is the rotation order.
+#[derive(Debug, Clone)]
+pub struct ValidatorSet {
+    validators: Vec<String>,
+}
+
+impl ValidatorSet {
+    /// Returns None if the list is empty (a chain with no validators makes no sense).
+    pub fn new(validators: Vec<String>) -> Option<ValidatorSet> {
+        if validators.is_empty() {
+            return None;
+        }
+        Some(ValidatorSet { validators })
+    }
+
+    /// Which validator owns a given slot: slot % number_of_validators.
+    pub fn validator_for_slot(&self, slot: u64) -> &str {
+        let index = (slot % self.validators.len() as u64) as usize;
+        &self.validators[index]
+    }
+
+    pub fn all(&self) -> &[String] {
+        &self.validators
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Block {
     pub index: u64,
     pub timestamp: u64,
+    pub validator: String,
     pub transactions: Vec<Transaction>,
     pub previous_hash: String,
     pub hash: String,
@@ -174,14 +212,16 @@ impl Block {
     pub fn new(
         index: u64,
         timestamp: u64,
+        validator: String,
         transactions: Vec<Transaction>,
         previous_hash: String,
     ) -> Block {
         // borrow first to compute the hash, then move the values into the struct
-        let hash = Block::compute_hash(index, timestamp, &transactions, &previous_hash);
+        let hash = Block::compute_hash(index, timestamp, &validator, &transactions, &previous_hash);
         Block {
             index,
             timestamp,
+            validator,
             transactions,
             previous_hash,
             hash,
@@ -192,19 +232,27 @@ impl Block {
     pub fn compute_hash(
         index: u64,
         timestamp: u64,
+        validator: &str,
         transactions: &[Transaction],
         previous_hash: &str,
     ) -> String {
-        let mut text = format!("{}|{}|{}", index, timestamp, previous_hash);
+        let mut text = format!("{}|{}|{}|{}", index, timestamp, validator, previous_hash);
         for tx in transactions {
             text.push_str(&format!(
                 "|{}>{}:{}:{}",
                 tx.from, tx.to, tx.amount, tx.nonce
             ));
         }
+        
         let mut hasher = Sha256::new();
         hasher.update(text.as_bytes());
-        format!("{:x}", hasher.finalize())
+        let bytes = hasher.finalize();
+
+        let mut hex = String::new();
+        for byte in bytes.iter() {
+            hex.push_str(&format!("{:02x}", byte));
+        }
+        hex
     }
 
     /// Does the stored hash still match the block's contents?
@@ -213,6 +261,7 @@ impl Block {
             == Block::compute_hash(
                 self.index,
                 self.timestamp,
+                &self.validator,
                 &self.transactions,
                 &self.previous_hash,
             )
@@ -222,16 +271,28 @@ impl Block {
 pub struct Blockchain {
     chain: Vec<Block>,
     state: WorldState,
+    validators: ValidatorSet,
+    slot_duration_ms: u64,
 }
 
 impl Blockchain {
     /// Starts a chain containing only the genesis block.
-    pub fn new(state: WorldState) -> Blockchain {
-        let genesis = Block::new(0, 0, Vec::new(), "0".repeat(64));
-        Blockchain {
+    /// Returns None if the slot duration is 0 (we would divide by zero).
+    pub fn new(
+        state: WorldState,
+        validators: ValidatorSet,
+        slot_duration_ms: u64,
+    ) -> Option<Blockchain> {
+        if slot_duration_ms == 0 {
+            return None;
+        }
+        let genesis = Block::new(0, 0, "genesis".to_string(), Vec::new(), "0".repeat(64));
+        Some(Blockchain {
             chain: vec![genesis],
             state,
-        }
+            validators,
+            slot_duration_ms,
+        })
     }
 
     pub fn latest_block(&self) -> &Block {
@@ -255,17 +316,59 @@ impl Blockchain {
         self.state.balance(address)
     }
 
-    /// Applies the transactions, and only if ALL are valid, appends a new block.
-    pub fn add_block(&mut self, timestamp: u64, txs: Vec<Transaction>) -> Result<(), TxError> {
-        self.state.apply_all(&txs)?;
+    /// Which slot a timestamp falls into.
+    pub fn slot(&self, timestamp: u64) -> u64 {
+        timestamp / self.slot_duration_ms
+    }
+
+    /// Checks the slot rules for a block made at `timestamp` by `validator`,
+    /// coming after `previous`. Does not look at transactions.
+    fn check_slot(
+        &self,
+        previous: &Block,
+        timestamp: u64,
+        validator: &str,
+    ) -> Result<(), BlockError> {
+        let slot = self.slot(timestamp);
+        if slot <= self.slot(previous.timestamp) {
+            return Err(BlockError::SlotAlreadyUsed { slot });
+        }
+        let expected = self.validators.validator_for_slot(slot);
+        if validator != expected {
+            return Err(BlockError::WrongValidator {
+                expected: expected.to_string(),
+                got: validator.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Checks the slot rules, applies the transactions, and only if ALL is fine,
+    /// appends a new block.
+    pub fn add_block(
+        &mut self,
+        validator: &str,
+        timestamp: u64,
+        txs: Vec<Transaction>,
+    ) -> Result<(), BlockError> {
+        self.check_slot(self.latest_block(), timestamp, validator)?;
+
+        // apply_all gives a TxError, so wrap it into BlockError::Tx
+        self.state.apply_all(&txs).map_err(BlockError::Tx)?;
 
         let latest = self.latest_block();
-        let block = Block::new(latest.index + 1, timestamp, txs, latest.hash.clone());
+        let block = Block::new(
+            latest.index + 1,
+            timestamp,
+            validator.to_string(),
+            txs,
+            latest.hash.clone(),
+        );
         self.chain.push(block);
         Ok(())
     }
 
-    /// Checks every block's hash and every link to the block before it.
+    /// Checks every block's hash, every link, and every slot rule.
     pub fn is_valid(&self) -> bool {
         for i in 0..self.chain.len() {
             let block = &self.chain[i];
@@ -275,6 +378,12 @@ impl Blockchain {
             if i > 0 {
                 let previous = &self.chain[i - 1];
                 if block.previous_hash != previous.hash || block.index != previous.index + 1 {
+                    return false;
+                }
+                if self
+                    .check_slot(previous, block.timestamp, &block.validator)
+                    .is_err()
+                {
                     return false;
                 }
             }
@@ -294,6 +403,15 @@ mod tests {
             amount,
             nonce,
         }
+    }
+
+    /// Two validators, 1000 ms slots, alice has 100.
+    /// Slot 1 (ts 1000..1999) -> v1, slot 2 (ts 2000..2999) -> v0, and so on.
+    fn make_chain() -> Blockchain {
+        let mut state = WorldState::new();
+        state.set_balance("alice", 100);
+        let validators = ValidatorSet::new(vec!["v0".to_string(), "v1".to_string()]).unwrap();
+        Blockchain::new(state, validators, 1000).unwrap()
     }
 
     #[test]
@@ -390,22 +508,53 @@ mod tests {
 
     #[test]
     fn block_hash_is_deterministic() {
-        let a = Block::new(1, 100, vec![tx("alice", "bob", 5, 0)], "abc".to_string());
-        let b = Block::new(1, 100, vec![tx("alice", "bob", 5, 0)], "abc".to_string());
+        let a = Block::new(
+            1,
+            100,
+            "v0".to_string(),
+            vec![tx("alice", "bob", 5, 0)],
+            "abc".to_string(),
+        );
+        let b = Block::new(
+            1,
+            100,
+            "v0".to_string(),
+            vec![tx("alice", "bob", 5, 0)],
+            "abc".to_string(),
+        );
         assert_eq!(a.hash, b.hash);
         assert_eq!(a.hash.len(), 64);
     }
 
     #[test]
     fn block_hash_changes_with_contents() {
-        let a = Block::new(1, 100, vec![tx("alice", "bob", 5, 0)], "abc".to_string());
-        let b = Block::new(1, 100, vec![tx("alice", "bob", 6, 0)], "abc".to_string());
+        let a = Block::new(
+            1,
+            100,
+            "v0".to_string(),
+            vec![tx("alice", "bob", 5, 0)],
+            "abc".to_string(),
+        );
+        let b = Block::new(
+            1,
+            100,
+            "v0".to_string(),
+            vec![tx("alice", "bob", 6, 0)],
+            "abc".to_string(),
+        );
+        assert_ne!(a.hash, b.hash);
+    }
+
+    #[test]
+    fn validator_is_part_of_the_hash() {
+        let a = Block::new(1, 100, "v0".to_string(), Vec::new(), "abc".to_string());
+        let b = Block::new(1, 100, "v1".to_string(), Vec::new(), "abc".to_string());
         assert_ne!(a.hash, b.hash);
     }
 
     #[test]
     fn new_chain_has_only_genesis() {
-        let chain = Blockchain::new(WorldState::new());
+        let chain = make_chain();
         assert_eq!(chain.len(), 1);
         assert_eq!(chain.latest_block().index, 0);
         assert!(chain.is_valid());
@@ -413,47 +562,113 @@ mod tests {
 
     #[test]
     fn add_block_links_and_updates_state() {
-        let mut state = WorldState::new();
-        state.set_balance("alice", 100);
-        let mut chain = Blockchain::new(state);
+        let mut chain = make_chain();
 
         assert_eq!(
-            chain.add_block(1000, vec![tx("alice", "bob", 40, 0)]),
+            chain.add_block("v1", 1000, vec![tx("alice", "bob", 40, 0)]),
             Ok(())
         );
         assert_eq!(chain.len(), 2);
         assert_eq!(chain.balance("bob"), 40);
         assert_eq!(chain.blocks()[1].previous_hash, chain.blocks()[0].hash);
+        assert_eq!(chain.blocks()[1].validator, "v1");
         assert!(chain.is_valid());
     }
 
     #[test]
     fn failed_block_is_not_added() {
-        let mut state = WorldState::new();
-        state.set_balance("alice", 10);
-        let mut chain = Blockchain::new(state);
+        let mut chain = make_chain();
 
-        let result = chain.add_block(1000, vec![tx("alice", "bob", 50, 0)]);
-        assert_eq!(result, Err(TxError::InsufficientBalance));
+        let result = chain.add_block("v1", 1000, vec![tx("alice", "bob", 500, 0)]);
+        assert_eq!(result, Err(BlockError::Tx(TxError::InsufficientBalance)));
         assert_eq!(chain.len(), 1);
-        assert_eq!(chain.balance("alice"), 10);
+        assert_eq!(chain.balance("alice"), 100);
     }
 
     #[test]
     fn tampering_is_detected() {
-        let mut state = WorldState::new();
-        state.set_balance("alice", 100);
-        let mut chain = Blockchain::new(state);
+        let mut chain = make_chain();
         chain
-            .add_block(1000, vec![tx("alice", "bob", 10, 0)])
+            .add_block("v1", 1000, vec![tx("alice", "bob", 10, 0)])
             .unwrap();
         chain
-            .add_block(2000, vec![tx("alice", "bob", 10, 1)])
+            .add_block("v0", 2000, vec![tx("alice", "bob", 10, 1)])
             .unwrap();
         assert!(chain.is_valid());
 
         // sneakily change an old transaction
         chain.chain[1].transactions[0].amount = 999;
+        assert!(!chain.is_valid());
+    }
+
+    #[test]
+    fn validator_set_rejects_empty_list() {
+        assert!(ValidatorSet::new(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn slot_owner_rotates() {
+        let set =
+            ValidatorSet::new(vec!["v0".to_string(), "v1".to_string(), "v2".to_string()]).unwrap();
+        assert_eq!(set.validator_for_slot(0), "v0");
+        assert_eq!(set.validator_for_slot(1), "v1");
+        assert_eq!(set.validator_for_slot(2), "v2");
+        assert_eq!(set.validator_for_slot(3), "v0");
+        assert_eq!(set.validator_for_slot(100), "v1");
+    }
+
+    #[test]
+    fn zero_slot_duration_is_refused() {
+        let validators = ValidatorSet::new(vec!["v0".to_string()]).unwrap();
+        assert!(Blockchain::new(WorldState::new(), validators, 0).is_none());
+    }
+
+    #[test]
+    fn wrong_validator_is_rejected() {
+        let mut chain = make_chain();
+        // timestamp 1000 is slot 1, which belongs to v1, not v0
+        let result = chain.add_block("v0", 1000, vec![tx("alice", "bob", 10, 0)]);
+        assert_eq!(
+            result,
+            Err(BlockError::WrongValidator {
+                expected: "v1".to_string(),
+                got: "v0".to_string()
+            })
+        );
+        assert_eq!(chain.len(), 1);
+    }
+
+    #[test]
+    fn second_block_in_same_slot_is_rejected() {
+        let mut chain = make_chain();
+        chain
+            .add_block("v1", 1000, vec![tx("alice", "bob", 10, 0)])
+            .unwrap();
+        // 1500 is still slot 1
+        let result = chain.add_block("v1", 1500, vec![tx("alice", "bob", 10, 1)]);
+        assert_eq!(result, Err(BlockError::SlotAlreadyUsed { slot: 1 }));
+    }
+
+    #[test]
+    fn block_in_the_past_is_rejected() {
+        let mut chain = make_chain();
+        chain
+            .add_block("v0", 2000, vec![tx("alice", "bob", 10, 0)])
+            .unwrap();
+        // slot 1 is earlier than slot 2
+        let result = chain.add_block("v1", 1000, vec![tx("alice", "bob", 10, 1)]);
+        assert_eq!(result, Err(BlockError::SlotAlreadyUsed { slot: 1 }));
+    }
+
+    #[test]
+    fn changing_the_validator_of_an_old_block_is_detected() {
+        let mut chain = make_chain();
+        chain
+            .add_block("v1", 1000, vec![tx("alice", "bob", 10, 0)])
+            .unwrap();
+        assert!(chain.is_valid());
+
+        chain.chain[1].validator = "v0".to_string();
         assert!(!chain.is_valid());
     }
 }

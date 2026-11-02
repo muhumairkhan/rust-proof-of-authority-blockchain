@@ -1,4 +1,4 @@
-use rust_poa_chain::{Blockchain, Transaction, WorldState};
+use rust_poa_chain::{Blockchain, Transaction, ValidatorSet, WorldState};
 
 fn tx(from: &str, to: &str, amount: u64, nonce: u64) -> Transaction {
     Transaction {
@@ -14,25 +14,51 @@ fn main() {
 
     let mut state = WorldState::new();
     state.set_balance("alice", 100);
-    let mut chain = Blockchain::new(state);
 
-    match chain.add_block(1000, vec![tx("alice", "bob", 30, 0)]) {
-        Ok(()) => println!("Block 1 added"),
-        Err(e) => println!("Block 1 rejected: {:?}", e),
-    }
-    match chain.add_block(2000, vec![tx("alice", "bob", 1000, 1)]) {
-        Ok(()) => println!("Block 2 added"),
-        Err(e) => println!("Block 2 rejected: {:?}", e),
+    let validators = match ValidatorSet::new(vec!["v0".to_string(), "v1".to_string()]) {
+        Some(v) => v,
+        None => {
+            println!("need at least one validator");
+            return;
+        }
+    };
+
+    let mut chain = match Blockchain::new(state, validators, 1000) {
+        Some(c) => c,
+        None => {
+            println!("slot duration must be more than zero");
+            return;
+        }
+    };
+
+    // (who signs, timestamp, transactions)
+    let attempts = vec![
+        ("v1", 1000, vec![tx("alice", "bob", 30, 0)]), // slot 1 -> v1: ok
+        ("v1", 1500, vec![tx("alice", "bob", 10, 1)]), // slot 1 again: rejected
+        ("v1", 2000, vec![tx("alice", "bob", 10, 1)]), // slot 2 belongs to v0: rejected
+        ("v0", 2000, vec![tx("alice", "bob", 20, 1)]), // slot 2 -> v0: ok
+    ];
+
+    for (validator, timestamp, txs) in attempts {
+        match chain.add_block(validator, timestamp, txs) {
+            Ok(()) => println!("{} @ {}: block added", validator, timestamp),
+            Err(e) => println!("{} @ {}: rejected ({:?})", validator, timestamp, e),
+        }
     }
 
     for block in chain.blocks() {
         println!(
-            "#{} hash={}... prev={}... txs={}",
+            "#{} by {} hash={}... txs={}",
             block.index,
+            block.validator,
             &block.hash[..10],
-            &block.previous_hash[..10],
             block.transactions.len()
         );
     }
+    println!(
+        "alice={} bob={}",
+        chain.balance("alice"),
+        chain.balance("bob")
+    );
     println!("chain valid: {}", chain.is_valid());
 }
