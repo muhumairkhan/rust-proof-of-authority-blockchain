@@ -14,6 +14,8 @@ pub enum TxError {
 pub enum BlockError {
     /// The block's slot is not later than the previous block's slot.
     SlotAlreadyUsed { slot: u64 },
+    /// The block was made before the slot's wait period was over.
+    TooEarlyInSlot { time_into_slot: u64, wait: u64 },
     /// Someone signed a slot that belongs to another validator.
     WrongValidator { expected: String, got: String },
     /// One of the transactions inside was invalid.
@@ -39,6 +41,16 @@ impl fmt::Display for BlockError {
         match self {
             BlockError::SlotAlreadyUsed { slot } => {
                 write!(f, "slot {} is already used or in the past", slot)
+            }
+            BlockError::TooEarlyInSlot {
+                time_into_slot,
+                wait,
+            } => {
+                write!(
+                    f,
+                    "proposed {}ms into the slot, but the slot wait is {}ms",
+                    time_into_slot, wait
+                )
             }
             BlockError::WrongValidator { expected, got } => {
                 write!(f, "slot belongs to {}, but {} signed it", expected, got)
@@ -76,6 +88,14 @@ mod tests {
         assert_eq!(
             BlockError::Tx(TxError::ZeroAmount).to_string(),
             "invalid transaction: amount must be more than zero"
+        );
+        assert_eq!(
+            BlockError::TooEarlyInSlot {
+                time_into_slot: 100,
+                wait: 300
+            }
+            .to_string(),
+            "proposed 100ms into the slot, but the slot wait is 300ms"
         );
     }
 
