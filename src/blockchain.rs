@@ -55,6 +55,13 @@ impl Blockchain {
     pub fn balance(&self, address: &str) -> u64 {
         self.state.balance(address)
     }
+    /// Total number of transactions across all blocks.
+    pub fn transaction_count(&self) -> usize {
+        self.chain
+            .iter()
+            .map(|block| block.transactions.len())
+            .sum()
+    }
 
     /// Which slot a timestamp falls into.
     pub fn slot(&self, timestamp: u64) -> u64 {
@@ -329,5 +336,23 @@ mod tests {
             &block.previous_hash,
         );
         assert!(!chain.is_valid());
+    }
+
+    #[test]
+    fn transaction_count_adds_up_all_blocks() {
+        let mut chain = make_chain();
+        assert_eq!(chain.transaction_count(), 0); // genesis has none
+
+        chain
+            .add_block("v1", 1000, vec![tx("alice", "bob", 10, 0)])
+            .unwrap();
+        chain
+            .add_block(
+                "v0",
+                2000,
+                vec![tx("alice", "bob", 10, 1), tx("alice", "bob", 10, 2)],
+            )
+            .unwrap();
+        assert_eq!(chain.transaction_count(), 3);
     }
 }

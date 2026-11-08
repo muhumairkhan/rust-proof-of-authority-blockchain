@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::crypto::sha256_hex;
 use crate::transaction::Transaction;
 
@@ -60,6 +62,19 @@ impl Block {
     }
 }
 
+impl fmt::Display for Block {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "#{} by {} ({} txs) hash={}...",
+            self.index,
+            self.validator,
+            self.transactions.len(),
+            &self.hash[..10]
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +127,12 @@ mod tests {
         let a = Block::new(1, 100, "v0".to_string(), Vec::new(), "abc".to_string());
         let b = Block::new(1, 100, "v1".to_string(), Vec::new(), "abc".to_string());
         assert_ne!(a.hash, b.hash);
+    }
+
+    #[test]
+    fn display_shows_index_validator_and_tx_count() {
+        let txs = vec![tx("alice", "bob", 5, 0), tx("alice", "bob", 6, 1)];
+        let block = Block::new(1, 100, "v1".to_string(), txs, "abc".to_string());
+        assert!(block.to_string().starts_with("#1 by v1 (2 txs)"));
     }
 }
