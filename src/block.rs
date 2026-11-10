@@ -64,12 +64,15 @@ impl Block {
 
 impl fmt::Display for Block {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let count = self.transactions.len();
+        let word = if count == 1 { "tx" } else { "txs" };
         write!(
             f,
-            "#{} by {} ({} txs) hash={}...",
+            "#{} by {} ({} {}) hash={}...",
             self.index,
             self.validator,
-            self.transactions.len(),
+            count,
+            word,
             &self.hash[..10]
         )
     }
@@ -134,5 +137,17 @@ mod tests {
         let txs = vec![tx("alice", "bob", 5, 0), tx("alice", "bob", 6, 1)];
         let block = Block::new(1, 100, "v1".to_string(), txs, "abc".to_string());
         assert!(block.to_string().starts_with("#1 by v1 (2 txs)"));
+    }
+
+    #[test]
+    fn display_uses_singular_for_one_tx() {
+        let block = Block::new(
+            1,
+            100,
+            "v1".to_string(),
+            vec![tx("alice", "bob", 5, 0)],
+            "abc".to_string(),
+        );
+        assert!(block.to_string().starts_with("#1 by v1 (1 tx)"));
     }
 }

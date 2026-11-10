@@ -63,6 +63,14 @@ impl Blockchain {
             .sum()
     }
 
+    /// How many blocks a given validator has signed.
+    pub fn blocks_by(&self, validator: &str) -> usize {
+        self.chain
+            .iter()
+            .filter(|block| block.validator == validator)
+            .count()
+    }
+
     /// Which slot a timestamp falls into.
     pub fn slot(&self, timestamp: u64) -> u64 {
         timestamp / self.slot_duration_ms
@@ -354,5 +362,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(chain.transaction_count(), 3);
+    }
+
+    #[test]
+    fn blocks_by_counts_per_validator() {
+        let mut chain = make_chain();
+        chain
+            .add_block("v1", 1000, vec![tx("alice", "bob", 10, 0)])
+            .unwrap();
+        chain
+            .add_block("v0", 2000, vec![tx("alice", "bob", 10, 1)])
+            .unwrap();
+        chain
+            .add_block("v1", 3000, vec![tx("alice", "bob", 10, 2)])
+            .unwrap();
+
+        assert_eq!(chain.blocks_by("v1"), 2);
+        assert_eq!(chain.blocks_by("v0"), 1);
+        assert_eq!(chain.blocks_by("nobody"), 0);
     }
 }

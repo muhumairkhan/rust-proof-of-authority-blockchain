@@ -47,6 +47,11 @@ fn main() {
     }
     println!("total transactions: {}", chain.transaction_count());
     println!(
+        "blocks by v0: {}, by v1: {}",
+        chain.blocks_by("v0"),
+        chain.blocks_by("v1")
+    );
+    println!(
         "alice={} bob={}",
         chain.balance("alice"),
         chain.balance("bob")
