@@ -71,6 +71,14 @@ impl Blockchain {
             .count()
     }
 
+    /// The validator name of every block, in chain order (genesis first).
+    pub fn validator_names(&self) -> Vec<String> {
+        self.chain
+            .iter()
+            .map(|block| block.validator.clone())
+            .collect()
+    }
+
     /// Which slot a timestamp falls into.
     pub fn slot(&self, timestamp: u64) -> u64 {
         timestamp / self.slot_duration_ms
@@ -380,5 +388,18 @@ mod tests {
         assert_eq!(chain.blocks_by("v1"), 2);
         assert_eq!(chain.blocks_by("v0"), 1);
         assert_eq!(chain.blocks_by("nobody"), 0);
+    }
+
+    #[test]
+    fn validator_names_are_in_chain_order() {
+        let mut chain = make_chain();
+        chain
+            .add_block("v1", 1000, vec![tx("alice", "bob", 10, 0)])
+            .unwrap();
+        chain
+            .add_block("v0", 2000, vec![tx("alice", "bob", 10, 1)])
+            .unwrap();
+
+        assert_eq!(chain.validator_names(), vec!["genesis", "v1", "v0"]);
     }
 }
