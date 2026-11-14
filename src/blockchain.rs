@@ -79,6 +79,11 @@ impl Blockchain {
             .collect()
     }
 
+    /// Timestamp of the newest block (0 for a chain with only genesis).
+    pub fn latest_timestamp(&self) -> u64 {
+        self.latest_block().timestamp
+    }
+
     /// Which slot a timestamp falls into.
     pub fn slot(&self, timestamp: u64) -> u64 {
         timestamp / self.slot_duration_ms
@@ -401,5 +406,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(chain.validator_names(), vec!["genesis", "v1", "v0"]);
+    }
+
+    #[test]
+    fn latest_timestamp_follows_the_newest_block() {
+        let mut chain = make_chain();
+        assert_eq!(chain.latest_timestamp(), 0);
+
+        chain
+            .add_block("v1", 1000, vec![tx("alice", "bob", 10, 0)])
+            .unwrap();
+        assert_eq!(chain.latest_timestamp(), 1000);
     }
 }
