@@ -167,6 +167,11 @@ impl Blockchain {
                     .is_ok()
         })
     }
+
+    /// The timestamp at which the slot after `timestamp`'s slot begins.
+    pub fn next_slot_start(&self, timestamp: u64) -> u64 {
+        (self.slot(timestamp) + 1) * self.slot_duration_ms
+    }
 }
 
 #[cfg(test)]
@@ -417,5 +422,14 @@ mod tests {
             .add_block("v1", 1000, vec![tx("alice", "bob", 10, 0)])
             .unwrap();
         assert_eq!(chain.latest_timestamp(), 1000);
+    }
+
+    #[test]
+    fn next_slot_start_is_the_next_boundary() {
+        let chain = make_chain(); // 1000 ms slots
+        assert_eq!(chain.next_slot_start(0), 1000);
+        assert_eq!(chain.next_slot_start(1250), 2000);
+        assert_eq!(chain.next_slot_start(1999), 2000);
+        assert_eq!(chain.next_slot_start(2000), 3000); // exactly on a boundary moves to the next one
     }
 }
