@@ -1,3 +1,7 @@
+use std::path::PathBuf;
+use std::process;
+
+use rust_poa_chain::export::{count_report_lines, write_report};
 use rust_poa_chain::{Blockchain, Transaction, ValidatorSet, WorldState};
 
 fn main() {
@@ -9,8 +13,8 @@ fn main() {
     let validators = match ValidatorSet::new(vec!["v0".to_string(), "v1".to_string()]) {
         Some(v) => v,
         None => {
-            println!("need at least one validator");
-            return;
+            eprintln!("need at least one validator");
+            process::exit(1);
         }
     };
 
@@ -18,21 +22,18 @@ fn main() {
     let mut chain = match Blockchain::new(state, validators, 1000, 200) {
         Some(c) => c,
         None => {
-            println!(
+            eprintln!(
                 "slot duration must be more than zero, and the wait must be shorter than the slot"
             );
-            return;
+            process::exit(1);
         }
     };
 
     // (who signs, timestamp, transactions)
     let attempts = vec![
-        ("v1", 1000, vec![Transaction::new("alice", "bob", 30, 0)]), // too early in slot
-        ("v1", 1250, vec![Transaction::new("alice", "bob", 30, 0)]), // ok
-        ("v1", 1500, vec![Transaction::new("alice", "bob", 10, 1)]), // slot already used
-        ("v1", 2250, vec![Transaction::new("alice", "bob", 10, 1)]), // slot 2 belongs to v0
-        ("v0", 2250, vec![Transaction::new("alice", "bob", 20, 1)]), // ok
-        ("v1", 3250, vec![Transaction::new("alice", "bob", 9999, 2)]), // too much money
+        ("v1", 1250, vec![Transaction::new("alice", "bob", 30, 0)]),
+        ("v0", 2250, vec![Transaction::new("alice", "bob", 20, 1)]),
+        ("v1", 3250, vec![Transaction::new("alice", "bob", 9999, 2)]), // rejected
     ];
 
     for (validator, timestamp, txs) in attempts {
@@ -42,19 +43,18 @@ fn main() {
         }
     }
 
-    for block in chain.blocks() {
-        println!("{}", block);
+    let path: PathBuf = ["data", "report.txt"].iter().collect();
+
+    if let Err(e) = write_report(&chain, &path) {
+        eprintln!("could not write {}: {}", path.display(), e);
+        process::exit(1);
     }
-    println!("total transactions: {}", chain.transaction_count());
-    println!(
-        "blocks by v0: {}, by v1: {}",
-        chain.blocks_by("v0"),
-        chain.blocks_by("v1")
-    );
-    println!(
-        "alice={} bob={}",
-        chain.balance("alice"),
-        chain.balance("bob")
-    );
-    println!("chain valid: {}", chain.is_valid());
+
+    match count_report_lines(&path) {
+        Ok(n) => println!("wrote {} lines to {}", n, path.display()),
+        Err(e) => {
+            eprintln!("could not read {}: {}", path.display(), e);
+            process::exit(1);
+        }
+    }
 }
