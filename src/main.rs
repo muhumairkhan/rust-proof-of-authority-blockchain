@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process;
 
-use rust_poa_chain::export::{count_report_lines, write_report};
+use rust_poa_chain::export::{append_summary, count_report_lines, file_size, write_report};
 use rust_poa_chain::{Blockchain, Transaction, ValidatorSet, WorldState};
 
 fn main() {
@@ -49,10 +49,21 @@ fn main() {
         eprintln!("could not write {}: {}", path.display(), e);
         process::exit(1);
     }
+    if let Err(e) = append_summary(&chain, &path) {
+        eprintln!("could not append to {}: {}", path.display(), e);
+        process::exit(1);
+    }
 
-    match count_report_lines(&path) {
-        Ok(n) => println!("wrote {} lines to {}", n, path.display()),
-        Err(e) => {
+    match (count_report_lines(&path), file_size(&path)) {
+        (Ok(lines), Ok(bytes)) => {
+            println!(
+                "wrote {} lines ({} bytes) to {}",
+                lines,
+                bytes,
+                path.display()
+            )
+        }
+        (Err(e), _) | (_, Err(e)) => {
             eprintln!("could not read {}: {}", path.display(), e);
             process::exit(1);
         }

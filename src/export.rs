@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
@@ -31,6 +31,25 @@ pub fn count_report_lines(path: &Path) -> io::Result<usize> {
     Ok(count)
 }
 
+/// Adds one summary line to the END of an existing report.
+/// Fails if the file does not exist, because `create` is not set.
+pub fn append_summary(chain: &Blockchain, path: &Path) -> io::Result<()> {
+    let mut file = OpenOptions::new().append(true).open(path)?;
+    writeln!(
+        file,
+        "summary: {} blocks, {} txs",
+        chain.len(),
+        chain.transaction_count()
+    )?;
+    Ok(())
+}
+
+/// Size of a file in bytes, read from its metadata.
+pub fn file_size(path: &Path) -> io::Result<u64> {
+    let metadata = fs::metadata(path)?;
+    Ok(metadata.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,10 +62,15 @@ mod tests {
         chain
     }
 
+    /// A scratch folder unique per test, so parallel tests never collide
+    /// and remove_dir_all is safe.
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("poa-{}-{}", label, std::process::id()))
+    }
+
     #[test]
     fn report_has_one_line_per_block() {
-        // a scratch folder, so remove_dir_all is safe
-        let dir = std::env::temp_dir().join(format!("poa-report-test-{}", std::process::id()));
+        let dir = scratch_dir("report");
         let path = dir.join("nested").join("report.txt");
 
         let chain = small_chain();
@@ -60,5 +84,45 @@ mod tests {
     fn missing_file_is_an_error() {
         let path = std::env::temp_dir().join("poa-definitely-not-here.txt");
         assert!(count_report_lines(&path).is_err());
+    }
+
+    #[test]
+    fn append_adds_a_line_at_the_end() {
+        let dir = scratch_dir("append");
+        let path = dir.join("report.txt");
+
+        let chain = small_chain();
+        write_report(&chain, &path).unwrap();
+        append_summary(&chain, &path).unwrap();
+
+        assert_eq!(count_report_lines(&path).unwrap(), 3);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.lines()
+                .last()
+                .unwrap()
+                .starts_with("summary: 2 blocks, 0 txs")
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn append_does_not_create_a_missing_file() {
+        let path = scratch_dir("no-create").join("report.txt");
+        let chain = small_chain();
+        assert!(append_summary(&chain, &path).is_err());
+    }
+
+    #[test]
+    fn file_size_matches_the_bytes_written() {
+        let dir = scratch_dir("size");
+        let path = dir.join("report.txt");
+
+        write_report(&small_chain(), &path).unwrap();
+        let on_disk = fs::read(&path).unwrap();
+        assert_eq!(file_size(&path).unwrap(), on_disk.len() as u64);
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
