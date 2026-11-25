@@ -5,6 +5,7 @@ pub mod crypto;
 pub mod describe;
 pub mod error;
 pub mod export;
+pub mod node;
 pub mod pool;
 pub mod state;
 pub mod transaction;

@@ -57,8 +57,7 @@ pub fn collect_with_mutex(batches: Vec<Vec<Transaction>>) -> Vec<Transaction> {
     }
 
     // All threads are finished, so lock once more and copy the result out.
-    let result = shared.lock().expect("mutex was poisoned").clone();
-    result
+    shared.lock().expect("mutex was poisoned").clone()
 }
 
 #[cfg(test)]
